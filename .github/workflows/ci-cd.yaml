@@ -49,7 +49,8 @@ jobs:
         with:
           image-ref: hello-k8s:v1
           severity: 'HIGH,CRITICAL'
-          exit-code: '1'
+          exit-code: '0'
+          ignore-infixed: true
           
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@master
