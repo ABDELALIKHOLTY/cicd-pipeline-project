@@ -1,4 +1,4 @@
-FROM python:3.11-alpine
+FROM python:3.11-bookworm
 WORKDIR /app
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 COPY requirements.txt .
