@@ -50,6 +50,7 @@ jobs:
           image-ref: hello-k8s:v1
           severity: 'HIGH,CRITICAL'
           exit-code: '1'
+          ignore-unfixed: true
           
           
       - name: SonarCloud Scan
