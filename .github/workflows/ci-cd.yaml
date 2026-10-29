@@ -1,0 +1,116 @@
+name: Production CI-CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # ---------------------------------------------------------
+  # JOB 1 : Vérification du code Python
+  # ---------------------------------------------------------
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+        
+      - name: Verify syntax
+        run: python -c "import src.app"
+
+  # ---------------------------------------------------------
+  # JOB 2 : Sécurité (Trivy) et Qualité (SonarCloud)
+  # ---------------------------------------------------------
+  security-and-quality:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Build Docker image for scan
+        run: docker build -t hello-k8s:v1 .
+        
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: hello-k8s:v1
+          severity: 'HIGH,CRITICAL'
+          exit-code: '1'
+          
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # ---------------------------------------------------------
+  # JOB 3 : Envoi de l'image sur AWS ECR
+  # ---------------------------------------------------------
+  push-to-ecr:
+    needs: security-and-quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Build Docker image
+        run: docker build -t hello-k8s:v1 .
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        
+      - name: Tag and Push image to ECR
+        run: |
+          docker tag hello-k8s:v1 ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/hello-k8s:v1
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/hello-k8s:v1
+
+  # ---------------------------------------------------------
+  # JOB 4 : Déploiement sur AWS EKS
+  # ---------------------------------------------------------
+  deploy-eks:
+    needs: push-to-ecr
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          
+      - name: Update Kubeconfig
+        run: aws eks update-kubeconfig --name hello-k8s-cluster --region ${{ secrets.AWS_REGION }}
+        
+      - name: Update K8s manifest to use ECR image
+        run: |
+          sed -i "s|image: hello-k8s:v1|image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/hello-k8s:v1|g" k8s/deployment.yaml
+          sed -i "/imagePullPolicy: Never/d" k8s/deployment.yaml
+          
+      - name: Deploy to EKS
+        run: |
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+          kubectl rollout status deployment/hello-Deployment
